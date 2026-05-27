@@ -21,8 +21,12 @@ def measure(fn) -> tuple[object, float]:
 
 def print_result(row: dict) -> None:
     print(
+        f"{row['scenario']:<28} "
         f"{row['label']:<28} "
         f"N={row['size']:<5} "
+        f"serv={row['servers']:<2} "
+        f"local={row['local_workers']:<2} "
+        f"w/serv={row['workers_per_server']:<2} "
         f"tempo={row['time']:.6f}s  "
         f"speedup={row['speedup']:.3f}  "
         f"eficiencia={row['efficiency']:.3f}  "
@@ -37,12 +41,23 @@ def make_row(
     elapsed: float,
     serial_time: float,
     valid: bool,
+    scenario: str,
+    repeat: int,
+    varied_parameter: str,
+    varied_value: int,
     servers: int = 1,
     workers: int = 1,
+    local_workers: int = 1,
+    workers_per_server: int = 1,
 ) -> dict:
     speedup = serial_time / elapsed if elapsed > 0 else 0.0
-    efficiency = speedup / servers if servers > 0 else speedup
+    parallel_units = max(1, workers)
+    efficiency = speedup / parallel_units
     return {
+        "scenario": scenario,
+        "repeat": repeat,
+        "varied_parameter": varied_parameter,
+        "varied_value": varied_value,
         "label": label,
         "mode": mode,
         "size": size,
@@ -52,6 +67,9 @@ def make_row(
         "efficiency": efficiency,
         "servers": servers,
         "workers": workers,
+        "local_workers": local_workers,
+        "workers_per_server": workers_per_server,
+        "parallel_units": parallel_units,
         "valid": valid,
     }
 
@@ -62,13 +80,32 @@ def compare_all_modes(
     servers: list[tuple[str, int]],
     local_workers: int,
     workers_per_server: int,
+    distributed_timeout: float,
+    scenario: str,
+    repeat: int,
+    varied_parameter: str,
+    varied_value: int,
 ) -> list[dict]:
     a = generate_matrix(size, size, seed)
     b = generate_matrix(size, size, seed + 1)
 
     serial_result, serial_time = measure(lambda: multiply_serial(a, b))
+    server_count = len(servers)
     rows = [
-        make_row("Serial", "serial", size, serial_time, serial_time, True)
+        make_row(
+            "Serial",
+            "serial",
+            size,
+            serial_time,
+            serial_time,
+            True,
+            scenario,
+            repeat,
+            varied_parameter,
+            varied_value,
+            local_workers=local_workers,
+            workers_per_server=workers_per_server,
+        )
     ]
 
     parallel_result, parallel_time = measure(lambda: multiply_parallel(a, b, local_workers))
@@ -80,11 +117,24 @@ def compare_all_modes(
             parallel_time,
             serial_time,
             matrices_equal(serial_result, parallel_result),
+            scenario,
+            repeat,
+            varied_parameter,
+            varied_value,
             workers=local_workers,
+            local_workers=local_workers,
+            workers_per_server=workers_per_server,
         )
     )
 
-    distributed_result = distributed_multiply(a, b, servers, mode=SERIAL, workers_per_server=1)
+    distributed_result = distributed_multiply(
+        a,
+        b,
+        servers,
+        mode=SERIAL,
+        workers_per_server=1,
+        timeout=distributed_timeout,
+    )
     rows.append(
         make_row(
             "Distribuido serial",
@@ -93,12 +143,25 @@ def compare_all_modes(
             distributed_result["time"],
             serial_time,
             matrices_equal(serial_result, distributed_result["matrix"]),
-            servers=len(servers),
-            workers=1,
+            scenario,
+            repeat,
+            varied_parameter,
+            varied_value,
+            servers=server_count,
+            workers=server_count,
+            local_workers=local_workers,
+            workers_per_server=workers_per_server,
         )
     )
 
-    hybrid_result = distributed_multiply(a, b, servers, mode=PROCESS_POOL, workers_per_server=workers_per_server)
+    hybrid_result = distributed_multiply(
+        a,
+        b,
+        servers,
+        mode=PROCESS_POOL,
+        workers_per_server=workers_per_server,
+        timeout=distributed_timeout,
+    )
     rows.append(
         make_row(
             "Distribuido hibrido",
@@ -107,8 +170,14 @@ def compare_all_modes(
             hybrid_result["time"],
             serial_time,
             matrices_equal(serial_result, hybrid_result["matrix"]),
-            servers=len(servers),
-            workers=workers_per_server,
+            scenario,
+            repeat,
+            varied_parameter,
+            varied_value,
+            servers=server_count,
+            workers=server_count * workers_per_server,
+            local_workers=local_workers,
+            workers_per_server=workers_per_server,
         )
     )
 
@@ -121,7 +190,11 @@ def run_benchmark(
     server_count: int,
     local_workers: int,
     workers_per_server: int,
+    distributed_timeout: float,
     seed: int,
+    scenario: str,
+    varied_parameter: str,
+    varied_value: int,
 ) -> list[dict]:
     servers, processes = start_servers(server_count, workers_per_server)
     all_rows: list[dict] = []
@@ -129,13 +202,22 @@ def run_benchmark(
     try:
         for size in sizes:
             for repeat in range(repeats):
-                print(f"\nExecutando N={size} | repeticao={repeat + 1}/{repeats}")
+                current_varied_value = size if varied_parameter == "size" else varied_value
+                print(
+                    f"\nCenario={scenario} | {varied_parameter}={current_varied_value} | "
+                    f"N={size} | repeticao={repeat + 1}/{repeats}"
+                )
                 rows = compare_all_modes(
                     size=size,
                     seed=seed + repeat + size,
                     servers=servers,
                     local_workers=local_workers,
                     workers_per_server=workers_per_server,
+                    distributed_timeout=distributed_timeout,
+                    scenario=scenario,
+                    repeat=repeat + 1,
+                    varied_parameter=varied_parameter,
+                    varied_value=current_varied_value,
                 )
                 all_rows.extend(rows)
                 for row in rows:
@@ -146,7 +228,117 @@ def run_benchmark(
     return all_rows
 
 
+def run_matrix_size_scenario(
+    sizes: list[int],
+    repeats: int,
+    server_count: int,
+    local_workers: int,
+    workers_per_server: int,
+    distributed_timeout: float,
+    seed: int,
+) -> list[dict]:
+    return run_benchmark(
+        sizes=sizes,
+        repeats=repeats,
+        server_count=server_count,
+        local_workers=local_workers,
+        workers_per_server=workers_per_server,
+        distributed_timeout=distributed_timeout,
+        seed=seed,
+        scenario="tamanho_matriz",
+        varied_parameter="size",
+        varied_value=0,
+    )
+
+
+def run_server_count_scenario(
+    sizes: list[int],
+    repeats: int,
+    server_counts: list[int],
+    local_workers: int,
+    workers_per_server: int,
+    distributed_timeout: float,
+    seed: int,
+) -> list[dict]:
+    results: list[dict] = []
+    for index, server_count in enumerate(server_counts):
+        results.extend(
+            run_benchmark(
+                sizes=sizes,
+                repeats=repeats,
+                server_count=server_count,
+                local_workers=local_workers,
+                workers_per_server=workers_per_server,
+                distributed_timeout=distributed_timeout,
+                seed=seed + 10_000 + index * 1_000,
+                scenario="quantidade_servidores",
+                varied_parameter="server_count",
+                varied_value=server_count,
+            )
+        )
+    return results
+
+
+def run_local_workers_scenario(
+    sizes: list[int],
+    repeats: int,
+    server_count: int,
+    local_workers_values: list[int],
+    workers_per_server: int,
+    distributed_timeout: float,
+    seed: int,
+) -> list[dict]:
+    results: list[dict] = []
+    for index, local_workers in enumerate(local_workers_values):
+        results.extend(
+            run_benchmark(
+                sizes=sizes,
+                repeats=repeats,
+                server_count=server_count,
+                local_workers=local_workers,
+                workers_per_server=workers_per_server,
+                distributed_timeout=distributed_timeout,
+                seed=seed + 20_000 + index * 1_000,
+                scenario="workers_locais",
+                varied_parameter="local_workers",
+                varied_value=local_workers,
+            )
+        )
+    return results
+
+
+def run_workers_per_server_scenario(
+    sizes: list[int],
+    repeats: int,
+    server_count: int,
+    local_workers: int,
+    workers_per_server_values: list[int],
+    distributed_timeout: float,
+    seed: int,
+) -> list[dict]:
+    results: list[dict] = []
+    for index, workers_per_server in enumerate(workers_per_server_values):
+        results.extend(
+            run_benchmark(
+                sizes=sizes,
+                repeats=repeats,
+                server_count=server_count,
+                local_workers=local_workers,
+                workers_per_server=workers_per_server,
+                distributed_timeout=distributed_timeout,
+                seed=seed + 30_000 + index * 1_000,
+                scenario="workers_por_servidor",
+                varied_parameter="workers_per_server",
+                varied_value=workers_per_server,
+            )
+        )
+    return results
+
+
 def save_csv(results: list[dict], path: str = "results/benchmark_results.csv") -> None:
+    if not results:
+        return
+
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -157,6 +349,11 @@ def save_csv(results: list[dict], path: str = "results/benchmark_results.csv") -
 
 
 def run_tests() -> None:
+    test_files = list(Path(".").glob("test_*.py")) + list(Path(".").glob("tests/test_*.py"))
+    if not test_files:
+        print("\nNenhum teste automatizado encontrado; pulando pytest.")
+        return
+
     print("\nExecutando testes automatizados...")
     completed = subprocess.run([sys.executable, "-m", "pytest"], check=False)
     if completed.returncode != 0:
@@ -167,8 +364,12 @@ def run_all(
     matrix_sizes: list[int],
     repeats: int,
     server_count: int,
+    server_counts: list[int],
     local_workers: int,
+    local_workers_values: list[int],
     workers_per_server: int,
+    workers_per_server_values: list[int],
+    distributed_timeout: float,
     seed: int,
     run_pytest: bool,
     save_results: bool,
@@ -177,13 +378,50 @@ def run_all(
     if run_pytest:
         run_tests()
 
-    results = run_benchmark(
-        sizes=matrix_sizes,
-        repeats=repeats,
-        server_count=server_count,
-        local_workers=local_workers,
-        workers_per_server=workers_per_server,
-        seed=seed,
+    results: list[dict] = []
+    results.extend(
+        run_matrix_size_scenario(
+            sizes=matrix_sizes,
+            repeats=repeats,
+            server_count=server_count,
+            local_workers=local_workers,
+            workers_per_server=workers_per_server,
+            distributed_timeout=distributed_timeout,
+            seed=seed,
+        )
+    )
+    results.extend(
+        run_server_count_scenario(
+            sizes=matrix_sizes,
+            repeats=repeats,
+            server_counts=server_counts,
+            local_workers=local_workers,
+            workers_per_server=workers_per_server,
+            distributed_timeout=distributed_timeout,
+            seed=seed,
+        )
+    )
+    results.extend(
+        run_local_workers_scenario(
+            sizes=matrix_sizes,
+            repeats=repeats,
+            server_count=server_count,
+            local_workers_values=local_workers_values,
+            workers_per_server=workers_per_server,
+            distributed_timeout=distributed_timeout,
+            seed=seed,
+        )
+    )
+    results.extend(
+        run_workers_per_server_scenario(
+            sizes=matrix_sizes,
+            repeats=repeats,
+            server_count=server_count,
+            local_workers=local_workers,
+            workers_per_server_values=workers_per_server_values,
+            distributed_timeout=distributed_timeout,
+            seed=seed,
+        )
     )
 
     if save_results:

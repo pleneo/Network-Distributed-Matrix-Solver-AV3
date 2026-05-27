@@ -32,10 +32,21 @@ Edite os parametros no topo de `main.py`:
 MATRIX_SIZES = [5, 60, 120, 500, 1000]
 REPEATS = 2
 SERVER_COUNT = 2
+SERVER_COUNTS = [1, 2, 3, 4]
 LOCAL_PARALLEL_WORKERS = 12
+LOCAL_PARALLEL_WORKERS_VALUES = [1, 2, 4, 8, 12]
 WORKERS_PER_SERVER = 6
+WORKERS_PER_SERVER_VALUES = [1, 2, 4, 6]
+DISTRIBUTED_TIMEOUT = 900.0
 SHOW_PLOTS = True
 ```
+
+O programa executa quatro cenarios:
+
+1. `tamanho_matriz`: varia `MATRIX_SIZES` e mantem servidores/workers fixos.
+2. `quantidade_servidores`: roda todos os `MATRIX_SIZES` para cada valor de `SERVER_COUNTS`.
+3. `workers_locais`: roda todos os `MATRIX_SIZES` para cada valor de `LOCAL_PARALLEL_WORKERS_VALUES`.
+4. `workers_por_servidor`: roda todos os `MATRIX_SIZES` para cada valor de `WORKERS_PER_SERVER_VALUES`.
 
 Depois execute:
 
