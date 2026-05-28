@@ -21,12 +21,16 @@ Endpoint = tuple[str, int]
 
 
 def _send(sock: socket.socket, data: dict[str, Any]) -> None:
+    """Serializa 'data' para JSON, calcula o comprimento em bytes e envia um cabecalho
+    de 8 bytes (big-endian unsigned long long) seguido do payload."""
     payload = json.dumps(data).encode("utf-8")
     sock.sendall(struct.pack("!Q", len(payload)))
     sock.sendall(payload)
 
 
 def _recv_exact(sock: socket.socket, size: int) -> bytes:
+    """Le exatamente 'size' bytes do socket em um laco, tratando recepcoes parciais.
+    Necessario porque TCP e um protocolo de fluxo continuo."""
     data = b""
     while len(data) < size:
         chunk = sock.recv(size - len(data))
@@ -37,11 +41,15 @@ def _recv_exact(sock: socket.socket, size: int) -> bytes:
 
 
 def _recv(sock: socket.socket) -> dict[str, Any]:
+    """Le o cabecalho de 8 bytes, determina o tamanho do payload e chama _recv_exact
+    para recebe-lo, retornando o dicionario deserializado."""
     size = struct.unpack("!Q", _recv_exact(sock, 8))[0]
     return json.loads(_recv_exact(sock, size).decode("utf-8"))
 
 
 def _calculate(a_block: Matrix, b: Matrix, mode: str, workers: int) -> Matrix:
+    """Executa a multiplicacao de um bloco localmente: chama multiply_serial no modo
+    serial e multiply_parallel no modo hibrido (process-pool)."""
     if mode == SERIAL:
         return multiply_serial(a_block, b)
     if mode == PROCESS_POOL:
@@ -50,6 +58,8 @@ def _calculate(a_block: Matrix, b: Matrix, mode: str, workers: int) -> Matrix:
 
 
 def handle_client(conn: socket.socket, default_mode: str, default_workers: int) -> None:
+    """Laco de atendimento de uma conexao: recebe a tarefa via _recv, chama _calculate
+    e envia de volta {row_start, row_end, c_block, compute_time}."""
     with conn:
         try:
             task = _recv(conn)
@@ -83,6 +93,8 @@ def run_server(
     workers: int = 1,
     max_tasks: int | None = None,
 ) -> None:
+    """Abre um socket TCP, aguarda conexoes em laco e chama handle_client para cada
+    cliente (um de cada vez por processo)."""
     handled = 0
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -97,12 +109,16 @@ def run_server(
 
 
 def find_free_port(host: str = HOST) -> int:
+    """Obtem uma porta livre do sistema operacional ligando um socket a 0.0.0.0:0
+    e consultando o numero atribuido."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind((host, 0))
         return int(sock.getsockname()[1])
 
 
 def wait_for_server(host: str, port: int, timeout: float = 10.0) -> None:
+    """Tenta conectar ao servidor em polling de 50ms ate que a conexao seja aceita
+    ou o timeout expire."""
     deadline = time.perf_counter() + timeout
     while time.perf_counter() < deadline:
         try:
@@ -114,6 +130,8 @@ def wait_for_server(host: str, port: int, timeout: float = 10.0) -> None:
 
 
 def start_servers(count: int, workers: int, host: str = HOST) -> tuple[list[Endpoint], list[Process]]:
+    """Cria 'count' processos (multiprocessing.Process) em portas livres, aguarda cada
+    um aceitar conexoes via wait_for_server e retorna a lista de (processo, host, porta)."""
     endpoints: list[Endpoint] = []
     processes: list[Process] = []
 
@@ -131,6 +149,8 @@ def start_servers(count: int, workers: int, host: str = HOST) -> tuple[list[Endp
 
 
 def stop_servers(processes: list[Process]) -> None:
+    """Chama terminate() em cada processo e aguarda sua finalizacao com join(timeout=5);
+    garante limpeza mesmo em caso de excecao."""
     for process in processes:
         if process.is_alive():
             process.terminate()
@@ -139,6 +159,8 @@ def stop_servers(processes: list[Process]) -> None:
 
 
 def _send_task(endpoint: Endpoint, task: dict[str, Any], timeout: float) -> dict[str, Any]:
+    """Abre uma conexao com um servidor, envia a tarefa via _send e recebe o resultado
+    via _recv; executado em thread pelo cliente via ThreadPoolExecutor."""
     host, port = endpoint
     with socket.create_connection((host, port), timeout=timeout) as sock:
         sock.settimeout(timeout)
@@ -158,6 +180,9 @@ def distributed_multiply(
     workers_per_server: int = 1,
     timeout: float = 120.0,
 ) -> dict[str, Any]:
+    """Ponto de entrada do cliente: divide A em blocos, submete cada bloco ao servidor
+    correspondente via ThreadPoolExecutor, coleta os resultados com as_completed e
+    chama combine_blocks para reconstruir C."""
     blocks = split_rows(a, len(servers))
     tasks = [
         {

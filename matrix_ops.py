@@ -12,6 +12,8 @@ Block = tuple[int, int, Matrix]
 
 
 def generate_matrix(rows: int, cols: int, seed: int, min_value: int = -9, max_value: int = 9) -> Matrix:
+    """Gera uma matriz de inteiros aleatorios em [min_value, max_value] usando random.Random(seed),
+    garantindo reproducibilidade entre execucoes."""
     if rows <= 0 or cols <= 0:
         raise ValueError("As dimensoes da matriz devem ser positivas.")
 
@@ -20,6 +22,7 @@ def generate_matrix(rows: int, cols: int, seed: int, min_value: int = -9, max_va
 
 
 def shape(matrix: Matrix) -> tuple[int, int]:
+    """Retorna uma tupla (linhas, colunas) para a matriz fornecida."""
     if not matrix or not matrix[0]:
         raise ValueError("A matriz nao pode ser vazia.")
 
@@ -31,6 +34,8 @@ def shape(matrix: Matrix) -> tuple[int, int]:
 
 
 def validate_multiplication(a: Matrix, b: Matrix) -> None:
+    """Verifica se o numero de colunas de A e igual ao numero de linhas de B;
+    lanca ValueError caso as dimensoes sejam incompativeis."""
     rows_a, cols_a = shape(a)
     rows_b, cols_b = shape(b)
     if cols_a != rows_b:
@@ -40,6 +45,8 @@ def validate_multiplication(a: Matrix, b: Matrix) -> None:
 
 
 def multiply_serial(a: Matrix, b: Matrix) -> Matrix:
+    """Implementacao classica do produto matricial C = A x B em um unico processo.
+    Pre-calcula as colunas de B para facilitar o produto escalar linha x coluna."""
     validate_multiplication(a, b)
     _, cols_a = shape(a)
     _, cols_b = shape(b)
@@ -52,6 +59,8 @@ def multiply_serial(a: Matrix, b: Matrix) -> Matrix:
 
 
 def split_rows(matrix: Matrix, parts: int) -> list[Block]:
+    """Divide a matriz em ate 'parts' blocos de linhas equilibrados,
+    retornando uma lista de tuplas (start, end, submatriz)."""
     rows, _ = shape(matrix)
     if parts <= 0:
         raise ValueError("A quantidade de partes deve ser positiva.")
@@ -72,6 +81,8 @@ def split_rows(matrix: Matrix, parts: int) -> list[Block]:
 
 
 def combine_blocks(blocks: Iterable[Block]) -> Matrix:
+    """Recebe uma lista de Blocks (possivelmente fora de ordem), ordena por row_start
+    e concatena as submatrizes, reconstruindo a matriz C completa."""
     result: Matrix = []
     expected_start = 0
 
@@ -87,12 +98,16 @@ def combine_blocks(blocks: Iterable[Block]) -> Matrix:
 
 
 def _multiply_block(args: tuple[Block, Matrix]) -> Block:
+    """Funcao auxiliar chamada pelos workers do ProcessPoolExecutor.
+    Recebe (start, end, bloco_a, b) e retorna o Block resultante da multiplicacao."""
     start, end, block = args[0]
     b = args[1]
     return start, end, multiply_serial(block, b)
 
 
 def multiply_parallel(a: Matrix, b: Matrix, workers: int) -> Matrix:
+    """Divide A em blocos e distribui o calculo entre 'workers' processos via ProcessPoolExecutor.
+    Cai para serial se workers <= 1 ou se A tiver uma unica linha."""
     validate_multiplication(a, b)
     if workers <= 1 or len(a) == 1:
         return multiply_serial(a, b)
@@ -105,4 +120,6 @@ def multiply_parallel(a: Matrix, b: Matrix, workers: int) -> Matrix:
 
 
 def matrices_equal(a: Matrix, b: Matrix) -> bool:
+    """Compara dois resultados elemento a elemento, retornando True se forem iguais.
+    Usada para validacao de corretude apos cada execucao distribuida."""
     return a == b
